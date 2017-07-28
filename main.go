@@ -13,8 +13,8 @@ import (
 
 func main() {
 	var (
-		mode = flag.String("mode", "server", "Whether to run as server or client (default server)")
-		addr = flag.String("address", "127.0.0.1:8888", "address to connect to (default 127.1:8888)")
+		mode = flag.String("mode", "server", "Whether to run as server or client")
+		addr = flag.String("address", "127.0.0.1:8888", "address to connect to")
 	)
 	flag.Parse()
 
