@@ -100,36 +100,71 @@ func (pool *ConnectionPool) Run() {
 
 func (pool *ConnectionPool) handleMessage(message Message) {
 	name := message.connection.RemoteAddr().String()
+	nick := pool.nicks[name]
+	if nick == "" {
+		nick = name
+	}
 	text := message.message
 	log.Printf("Client %s: \"%s\"", name, text)
 
+	// Allow setting and changing of nicknames
 	if strings.HasPrefix(text, "/nick ") {
-		nick := strings.TrimPrefix(text, "/nick ")
-		if pool.rnicks[nick] != "" {
-			remote := pool.connections[pool.rnicks[nick]]
-			fmt.Fprintf(message.connection, "Nickname '%s' is already taken by %s\n", nick, remote.RemoteAddr().String())
-			fmt.Fprintf(remote, "User '%s' tried to steal your nickname '%s'\n", name, nick)
+		// clean off the command from the start of the message
+		newNick := strings.TrimPrefix(text, "/nick ")
+
+		// nicks must be one word
+		if strings.Index(nick, " ") != -1 {
+			fmt.Fprintf(message.connection, "Nickname '%s' cannot have spaces in\n", newNick)
 			return
 		}
-		defer func() {
-			pool.nicks[name] = nick
-			pool.rnicks[nick] = message.connection.RemoteAddr().String()
-		}()
-		log.Printf("%s has changed their nickname to '%s'", name, nick)
-		text = fmt.Sprintf("Nickname changed to '%s'", nick)
+
+		// check to see if the nickname is already taken - if it is tell the requester and the owner
+		if remote := pool.connectionFromNickOrName(newNick); remote != nil {
+			fmt.Fprintf(message.connection, "Nickname '%s' is already taken by %s\n", newNick, remote.RemoteAddr().String())
+			fmt.Fprintf(remote, "User '%s' tried to steal your nickname '%s'\n", name, newNick)
+			return
+		}
+
+		pool.nicks[name] = newNick
+		pool.rnicks[newNick] = message.connection.RemoteAddr().String()
+		log.Printf("%s has changed their nickname from '%s' to '%s'", name, nick, newNick)
+		text = fmt.Sprintf("Nickname changed to '%s'", newNick)
+	}
+
+	// Allow sending private messages
+	if strings.HasPrefix(text, "/privmsg") {
+		// clean off the command from the start of the message
+		text = strings.TrimPrefix(text, "/privmsg ")
+		// now get the recipient and the message
+		parts := strings.SplitN(text, " ", 2)
+		rnick, text := parts[0], parts[1]
+
+		remote := pool.connectionFromNickOrName(rnick)
+		if remote == nil {
+			fmt.Fprintf(message.connection, "Couldn't find a person named '%s'", rnick)
+		} else if remote == message.connection {
+			fmt.Fprintf(message.connection, "You can't privmsg yourself")
+		} else {
+			fmt.Fprintf(remote, "%s (private)> %s\n", nick, text)
+			fmt.Fprintf(message.connection, "Message sent\n")
+		}
+		return
 	}
 
 	for n, c := range pool.connections {
 		if n == name {
 			fmt.Fprintf(c, "> %s\n", text)
 		} else {
-			nick := pool.nicks[name]
-			if nick == "" {
-				nick = name
-			}
 			fmt.Fprintf(c, "%s> %s\n", nick, text)
 		}
 	}
+}
+
+func (pool *ConnectionPool) connectionFromNickOrName(name string) net.Conn {
+	if tmp, ok := pool.rnicks[name]; ok {
+		name = tmp
+	}
+	return pool.connections[name]
 }
 
 func runServer(address string) error {
