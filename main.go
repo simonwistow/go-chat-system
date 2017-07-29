@@ -34,6 +34,8 @@ func main() {
 
 type ConnectionPool struct {
 	connections map[string]net.Conn
+	nicks       map[string]string
+	rnicks      map[string]string
 	connectc    chan net.Conn
 	disconnectc chan net.Conn
 	broadcastc  chan Message
@@ -48,6 +50,8 @@ type Message struct {
 func newConnectionPool() *ConnectionPool {
 	return &ConnectionPool{
 		connections: map[string]net.Conn{},
+		nicks:       map[string]string{},
+		rnicks:      map[string]string{},
 		connectc:    make(chan net.Conn),
 		disconnectc: make(chan net.Conn),
 		broadcastc:  make(chan Message),
@@ -83,16 +87,7 @@ func (pool *ConnectionPool) Run() {
 			log.Printf("Client %s: disconnected", name)
 			delete(pool.connections, name)
 		case message := <-pool.broadcastc:
-			name := message.connection.RemoteAddr().String()
-			text := message.message
-			log.Printf("Client %s: \"%s\"", name, text)
-			for n, c := range pool.connections {
-				if n == name {
-					fmt.Fprintf(c, "> %s\n", text)
-				} else {
-					fmt.Fprintf(c, "%s> %s\n", name, text)
-				}
-			}
+			pool.handleMessage(message)
 		case <-pool.quitc:
 			for _, conn := range pool.connections {
 				conn.Close()
@@ -101,6 +96,40 @@ func (pool *ConnectionPool) Run() {
 		}
 	}
 
+}
+
+func (pool *ConnectionPool) handleMessage(message Message) {
+	name := message.connection.RemoteAddr().String()
+	text := message.message
+	log.Printf("Client %s: \"%s\"", name, text)
+
+	if strings.HasPrefix(text, "/nick ") {
+		nick := strings.TrimPrefix(text, "/nick ")
+		if pool.rnicks[nick] != "" {
+			remote := pool.connections[pool.rnicks[nick]]
+			fmt.Fprintf(message.connection, "Nickname '%s' is already taken by %s\n", nick, remote.RemoteAddr().String())
+			fmt.Fprintf(remote, "User '%s' tried to steal your nickname '%s'\n", name, nick)
+			return
+		}
+		defer func() {
+			pool.nicks[name] = nick
+			pool.rnicks[nick] = message.connection.RemoteAddr().String()
+		}()
+		log.Printf("%s has changed their nickname to '%s'", name, nick)
+		text = fmt.Sprintf("Nickname changed to '%s'", nick)
+	}
+
+	for n, c := range pool.connections {
+		if n == name {
+			fmt.Fprintf(c, "> %s\n", text)
+		} else {
+			nick := pool.nicks[name]
+			if nick == "" {
+				nick = name
+			}
+			fmt.Fprintf(c, "%s> %s\n", nick, text)
+		}
+	}
 }
 
 func runServer(address string) error {
