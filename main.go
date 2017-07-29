@@ -151,6 +151,27 @@ func (pool *ConnectionPool) handleMessage(message Message) {
 		return
 	}
 
+	// Allow listing of all users
+	if strings.HasPrefix(text, "/who") {
+		// clean off the command from the start of the message
+		text = strings.TrimPrefix(text, "/who ")
+		var names []string
+
+		// loop through all connections
+		for name, c := range pool.connections {
+			// lookup the nickname if applicable
+			if nick, ok := pool.nicks[name]; ok {
+				name = fmt.Sprintf("%s (%s)", nick, name)
+			}
+			if c == message.connection {
+				name += " *"
+			}
+			names = append(names, name)
+		}
+		fmt.Fprintf(message.connection, "%s\n", strings.Join(names, "\n"))
+		return
+	}
+
 	for n, c := range pool.connections {
 		if n == name {
 			fmt.Fprintf(c, "> %s\n", text)
