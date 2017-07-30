@@ -87,7 +87,11 @@ func (pool *ConnectionPool) Run() {
 			log.Printf("Client %s: disconnected", name)
 			delete(pool.connections, name)
 		case message := <-pool.broadcastc:
-			pool.handleMessage(message)
+			if strings.HasPrefix(message.message, "/") {
+				pool.handleCommand(message)
+			} else {
+				pool.handleMessage(message)
+			}
 		case <-pool.quitc:
 			for _, conn := range pool.connections {
 				conn.Close()
@@ -98,25 +102,35 @@ func (pool *ConnectionPool) Run() {
 
 }
 
-func (pool *ConnectionPool) handleMessage(message Message) {
+func (pool *ConnectionPool) getNames(message Message) (string, string) {
 	name := message.connection.RemoteAddr().String()
 	nick := pool.nicks[name]
 	if nick == "" {
 		nick = name
 	}
+	return name, nick
+}
+
+func (pool *ConnectionPool) handleCommand(message Message) {
+	name, nick := pool.getNames(message)
 	text := message.message
-	log.Printf("Client %s: \"%s\"", name, text)
+	// clean off the command from the start of the message
+	parts := strings.Split(text, " ")
+	cmd, parts := parts[0], parts[1:]
 
+	log.Printf("Command %s: \"%s\"", name, cmd)
+
+	switch {
 	// Allow setting and changing of nicknames
-	if strings.HasPrefix(text, "/nick ") {
-		// clean off the command from the start of the message
-		newNick := strings.TrimPrefix(text, "/nick ")
-
+	case cmd == "/nick":
 		// nicks must be one word
-		if strings.Index(nick, " ") != -1 {
-			fmt.Fprintf(message.connection, "Nickname '%s' cannot have spaces in\n", newNick)
+		if len(parts) > 1 {
+			fmt.Fprintf(message.connection, "Nickname '%s' cannot have spaces in\n", strings.Join(parts, " "))
 			return
 		}
+
+		// clean off the command from the start of the message
+		newNick := parts[0]
 
 		// check to see if the nickname is already taken - if it is tell the requester and the owner
 		if remote := pool.connectionFromNickOrName(newNick); remote != nil {
@@ -127,34 +141,25 @@ func (pool *ConnectionPool) handleMessage(message Message) {
 
 		pool.nicks[name] = newNick
 		pool.rnicks[newNick] = message.connection.RemoteAddr().String()
-		log.Printf("%s has changed their nickname from '%s' to '%s'", name, nick, newNick)
-		text = fmt.Sprintf("Nickname changed to '%s'", newNick)
-	}
 
+		log.Printf("%s has changed their nickname from '%s' to '%s'", name, nick, newNick)
+		pool.handleMessage(Message{connection: message.connection, message: fmt.Sprintf("Nickname changed to '%s'", newNick)})
 	// Allow sending private messages
-	if strings.HasPrefix(text, "/privmsg") {
-		// clean off the command from the start of the message
-		text = strings.TrimPrefix(text, "/privmsg ")
-		// now get the recipient and the message
-		parts := strings.SplitN(text, " ", 2)
-		rnick, text := parts[0], parts[1]
+	case cmd == "/privmsg":
+		rnick, text := parts[0], strings.Join(parts[1:], " ")
+		log.Printf("User %s sending a privmsg to %s", nick, rnick)
 
 		remote := pool.connectionFromNickOrName(rnick)
 		if remote == nil {
-			fmt.Fprintf(message.connection, "Couldn't find a person named '%s'", rnick)
+			fmt.Fprintf(message.connection, "Couldn't find a person named '%s'\n", rnick)
 		} else if remote == message.connection {
-			fmt.Fprintf(message.connection, "You can't privmsg yourself")
+			fmt.Fprintf(message.connection, "You can't privmsg yourself\n")
 		} else {
 			fmt.Fprintf(remote, "%s (private)> %s\n", nick, text)
 			fmt.Fprintf(message.connection, "Message sent\n")
 		}
-		return
-	}
-
 	// Allow listing of all users
-	if strings.HasPrefix(text, "/who") {
-		// clean off the command from the start of the message
-		text = strings.TrimPrefix(text, "/who ")
+	case cmd == "/who":
 		var names []string
 
 		// loop through all connections
@@ -169,8 +174,17 @@ func (pool *ConnectionPool) handleMessage(message Message) {
 			names = append(names, name)
 		}
 		fmt.Fprintf(message.connection, "%s\n", strings.Join(names, "\n"))
-		return
+	default:
+		fmt.Fprintf(message.connection, "Unknown command %s\n", cmd)
 	}
+
+	return
+}
+
+func (pool *ConnectionPool) handleMessage(message Message) {
+	name, nick := pool.getNames(message)
+	text := message.message
+	log.Printf("Message %s: \"%s\"", name, text)
 
 	for n, c := range pool.connections {
 		if n == name {
