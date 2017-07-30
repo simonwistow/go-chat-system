@@ -143,7 +143,7 @@ func (pool *ConnectionPool) handleCommand(message Message) {
 		pool.rnicks[newNick] = message.connection.RemoteAddr().String()
 
 		log.Printf("%s has changed their nickname from '%s' to '%s'", name, nick, newNick)
-		pool.handleMessage(Message{connection: message.connection, message: fmt.Sprintf("Nickname changed to '%s'", newNick)})
+		pool.sendAll(name, fmt.Sprintf("Nickname changed from '%s' to '%s'", nick, newNick))
 	// Allow sending private messages
 	case cmd == "/privmsg":
 		rnick, text := parts[0], strings.Join(parts[1:], " ")
@@ -185,12 +185,15 @@ func (pool *ConnectionPool) handleMessage(message Message) {
 	name, nick := pool.getNames(message)
 	text := message.message
 	log.Printf("Message %s: \"%s\"", name, text)
+	pool.sendAll(nick, text)
+}
 
+func (pool *ConnectionPool) sendAll(from string, text string) {
 	for n, c := range pool.connections {
-		if n == name {
+		if n == from {
 			fmt.Fprintf(c, "> %s\n", text)
 		} else {
-			fmt.Fprintf(c, "%s> %s\n", nick, text)
+			fmt.Fprintf(c, "%s> %s\n", from, text)
 		}
 	}
 }
